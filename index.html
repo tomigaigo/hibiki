@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Hibiki - 卒業多重録音</title>
+    <style>
+        body { font-family: sans-serif; background: #fdf6f0; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        .container { background: white; padding: 2rem; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center; width: 340px; }
+        h1 { color: #d88a8a; font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .status { margin-bottom: 20px; font-size: 0.8rem; color: #d88a8a; font-weight: bold; min-height: 1.2em; }
+        .controls { display: flex; flex-direction: column; gap: 10px; }
+        button { padding: 12px; border: none; border-radius: 50px; cursor: pointer; font-weight: bold; transition: 0.3s; }
+        #recBtn { background: #ff6b6b; color: white; }
+        #recBtn.recording { background: #333; animation: pulse 1.5s infinite; }
+        #playBtn { background: #4ecdc4; color: white; }
+        #dlBtn { background: #ffd700; color: #333; }
+        #resetBtn { background: #eee; color: #666; font-size: 0.8rem; margin-top: 5px; }
+        button:disabled { background: #ccc !important; cursor: not-allowed; color: #fff !important; }
+        audio { width: 100%; margin-top: 20px; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Hibiki 🌸</h1>
+    <div class="status" id="statusMsg">マイクを許可して開始</div>
+
+    <div class="controls">
+        <button id="recBtn">録音開始</button>
+        <button id="playBtn" disabled>再生</button>
+        <button id="dlBtn" disabled>WAV保存</button>
+        <button id="resetBtn">リセット</button>
+    </div>
+
+    <audio id="mainAudio" controls></audio>
+</div>
+
+<script>
+let audioContext;
+let currentBlob = null;
+let mediaRecorder;
+let chunks = [];
+
+const recBtn = document.getElementById('recBtn');
+const playBtn = document.getElementById('playBtn');
+const dlBtn = document.getElementById('dlBtn');
+const resetBtn = document.getElementById('resetBtn');
+const mainAudio = document.getElementById('mainAudio');
+const statusMsg = document.getElementById('statusMsg');
+
+// --- WAV変換 ---
+function bufferToWave(abuffer, len) {
+    let numOfChan = abuffer.numberOfChannels,
+        length = len * numOfChan * 2 + 44,
+        buffer = new ArrayBuffer(length),
+        view = new DataView(buffer),
+        channels = [], i, sample, offset = 0, pos = 0;
+
+    const setUint16 = (data) => { view.setUint16(pos, data, true); pos += 2; };
+    const setUint32 = (data) => { view.setUint32(pos, data, true); pos += 4; };
+
+    setUint32(0x46464952); setUint32(length - 8); setUint32(0x45564157);
+    setUint32(0x20746d66); setUint32(16); setUint16(1); setUint16(numOfChan);
+    setUint32(abuffer.sampleRate); setUint32(abuffer.sampleRate * 2 * numOfChan);
+    setUint16(numOfChan * 2); setUint16(16); setUint32(0x61746164); setUint32(length - pos - 4);
+
+    for(i=0; i<numOfChan; i++) channels.push(abuffer.getChannelData(i));
+    while(pos < length) {
+        for(i=0; i<numOfChan; i++) {
+            sample = Math.max(-1, Math.min(1, channels[i][offset]));
+            sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
+            view.setInt16(pos, sample, true); pos += 2;
+        }
+        offset++;
+    }
+    return new Blob([buffer], {type: "audio/wav"});
+}
+
+// --- 録音開始/停止 ---
+recBtn.onclick = async () => {
+    try {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+            return;
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const micSource = audioContext.createMediaStreamSource(stream);
+        const dest = audioContext.createMediaStreamDestination();
+        micSource.connect(dest);
+
+        // 重ねる処理
+        if (currentBlob) {
+            const ab = await currentBlob.arrayBuffer();
+            const audioBuffer = await audioContext.decodeAudioData(ab);
+            const player = audioContext.createBufferSource();
+            player.buffer = audioBuffer;
+            player.connect(dest);
+            player.connect(audioContext.destination);
+            player.start();
+        }
+
+        mediaRecorder = new MediaRecorder(dest.stream);
+        chunks = [];
+        mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+
+        mediaRecorder.onstop = async () => {
+            statusMsg.innerText = "WAV変換中...";
+            recBtn.classList.remove('recording');
+            recBtn.innerText = "録音開始 (レイヤー追加)";
+
+            const rawBlob = new Blob(chunks);
+            const ab = await rawBlob.arrayBuffer();
+            audioContext.decodeAudioData(ab, (decoded) => {
+                const wavBlob = bufferToWave(decoded, decoded.length);
+                currentBlob = wavBlob;
+                mainAudio.src = URL.createObjectURL(wavBlob);
+                playBtn.disabled = false;
+                dlBtn.disabled = false;
+                statusMsg.innerText = "準備完了！";
+            }, (err) => {
+                statusMsg.innerText = "エラー: 録音が短すぎます";
+            });
+        };
+
+        mediaRecorder.start();
+        recBtn.classList.add('recording');
+        recBtn.innerText = "録音を停止";
+        statusMsg.innerText = "録音中...";
+
+    } catch (err) {
+        statusMsg.innerText = "マイクの使用を許可してください";
+        console.error(err);
+    }
+};
+
+playBtn.onclick = () => mainAudio.play();
+dlBtn.onclick = () => {
+    const a = document.createElement('a');
+    a.href = mainAudio.src;
+    a.download = `hibiki_${Date.now()}.wav`;
+    a.click();
+};
+resetBtn.onclick = () => location.reload();
+</script>
+</body>
+</html>
