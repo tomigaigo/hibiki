@@ -13,26 +13,24 @@
         --bg-color: #fdf6f0;
       }
       body {
-        font-family:
-          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-family: sans-serif;
         background: var(--bg-color);
         display: flex;
-        flex-direction: column;
         align-items: center;
         justify-content: center;
         min-height: 100vh;
         margin: 0;
-        padding: 20px;
+        padding: 10px;
         box-sizing: border-box;
       }
       .container {
         background: white;
         padding: 2rem 1.5rem;
         border-radius: 30px;
-        box-shadow: 0 15px 35px rgba(216, 138, 138, 0.15);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
         text-align: center;
         width: 100%;
-        max-width: 400px; /* スマホで横幅いっぱいに、PCでは適切な幅に */
+        max-width: 400px;
         box-sizing: border-box;
       }
       h1 {
@@ -41,7 +39,7 @@
         margin: 0 0 10px 0;
       }
       .status {
-        margin-bottom: 25px;
+        margin-bottom: 20px;
         font-size: 0.9rem;
         color: #d88a8a;
         font-weight: bold;
@@ -50,10 +48,8 @@
       .controls {
         display: flex;
         flex-direction: column;
-        gap: 15px;
+        gap: 12px;
       }
-
-      /* ボタンを大きくして押しやすく */
       button {
         padding: 16px;
         border: none;
@@ -61,19 +57,11 @@
         cursor: pointer;
         font-weight: bold;
         font-size: 1rem;
-        transition:
-          transform 0.1s,
-          background 0.3s;
-        -webkit-tap-highlight-color: transparent; /* タップ時の青枠を消す */
+        transition: 0.2s;
       }
-      button:active {
-        transform: scale(0.98);
-      }
-
       #recBtn {
         background: var(--primary-color);
         color: white;
-        box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
       }
       #recBtn.recording {
         background: #333;
@@ -88,32 +76,19 @@
         color: #333;
       }
       #resetBtn {
-        background: transparent;
-        color: #999;
+        background: #eee;
+        color: #666;
         font-size: 0.8rem;
-        text-decoration: underline;
-        margin-top: 10px;
+        margin-top: 5px;
       }
-
       button:disabled {
         background: #eee !important;
         color: #bbb !important;
-        box-shadow: none !important;
       }
-
       audio {
         width: 100%;
-        margin-top: 25px;
-        border-radius: 10px;
-      }
-
-      .hint {
-        font-size: 11px;
-        color: #bba;
         margin-top: 20px;
-        line-height: 1.5;
       }
-
       @keyframes pulse {
         0% {
           opacity: 1;
@@ -130,147 +105,109 @@
   <body>
     <div class="container">
       <h1>Hibiki 🌸</h1>
-      <div class="status" id="statusMsg">イヤホンを推奨します</div>
-
+      <div class="status" id="statusMsg">マイクを許可して開始</div>
       <div class="controls">
-        <button id="recBtn">声を吹き込む</button>
-        <button id="playBtn" disabled>今の音を聴く</button>
-        <button id="dlBtn" disabled>WAVとして保存</button>
-        <button id="resetBtn">最初からやり直す</button>
+        <button id="recBtn">録音開始</button>
+        <button id="playBtn" disabled>再生</button>
+        <button id="dlBtn" disabled>WAV保存</button>
+        <button id="resetBtn">リセット</button>
       </div>
-
       <audio id="mainAudio" controls playsinline></audio>
-
-      <div class="hint">
-        ※ 録音するたびに、前の音に重なります。<br />
-        友達に回して、声を重ねていきましょう。
-      </div>
     </div>
 
     <script>
-      let audioContext;
-      let currentBlob = null;
-      let mediaRecorder;
-      let chunks = [];
+      let audioContext,
+        currentBlob,
+        mediaRecorder,
+        chunks = [];
+      const recBtn = document.getElementById("recBtn"),
+        playBtn = document.getElementById("playBtn"),
+        dlBtn = document.getElementById("dlBtn"),
+        resetBtn = document.getElementById("resetBtn"),
+        mainAudio = document.getElementById("mainAudio"),
+        statusMsg = document.getElementById("statusMsg");
 
-      const recBtn = document.getElementById("recBtn");
-      const playBtn = document.getElementById("playBtn");
-      const dlBtn = document.getElementById("dlBtn");
-      const resetBtn = document.getElementById("resetBtn");
-      const mainAudio = document.getElementById("mainAudio");
-      const statusMsg = document.getElementById("statusMsg");
-
-      // WAV変換ロジック（そのまま）
       function bufferToWave(abuffer, len) {
         let numOfChan = abuffer.numberOfChannels,
           length = len * numOfChan * 2 + 44,
           buffer = new ArrayBuffer(length),
           view = new DataView(buffer),
-          channels = [],
-          i,
-          sample,
-          offset = 0,
           pos = 0;
-        const setUint16 = (data) => {
-          view.setUint16(pos, data, true);
-          pos += 2;
+        const set = (d, t) => {
+          if (t === 16) view.setUint16(pos, d, true);
+          else view.setUint32(pos, d, true);
+          pos += t === 16 ? 2 : 4;
         };
-        const setUint32 = (data) => {
-          view.setUint32(pos, data, true);
-          pos += 4;
-        };
-        setUint32(0x46464952);
-        setUint32(length - 8);
-        setUint32(0x45564157);
-        setUint32(0x20746d66);
-        setUint32(16);
-        setUint16(1);
-        setUint16(numOfChan);
-        setUint32(abuffer.sampleRate);
-        setUint32(abuffer.sampleRate * 2 * numOfChan);
-        setUint16(numOfChan * 2);
-        setUint16(16);
-        setUint32(0x61746164);
-        setUint32(length - pos - 4);
-        for (i = 0; i < numOfChan; i++)
-          channels.push(abuffer.getChannelData(i));
-        while (pos < length) {
-          for (i = 0; i < numOfChan; i++) {
-            sample = Math.max(-1, Math.min(1, channels[i][offset]));
-            sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
-            view.setInt16(pos, sample, true);
+        set(0x46464952, 32);
+        set(length - 8, 32);
+        set(0x45564157, 32);
+        set(0x20746d66, 32);
+        set(16, 32);
+        set(1, 16);
+        set(numOfChan, 16);
+        set(abuffer.sampleRate, 32);
+        set(abuffer.sampleRate * 2 * numOfChan, 32);
+        set(numOfChan * 2, 16);
+        set(16, 16);
+        set(0x61746164, 32);
+        set(length - pos - 4, 32);
+        for (let i = 0; i < numOfChan; i++) {
+          let chan = abuffer.getChannelData(i);
+          for (let j = 0; j < len; j++) {
+            let s = Math.max(-1, Math.min(1, chan[j]));
+            s = (0.5 + s < 0 ? s * 32768 : s * 32767) | 0;
+            view.setInt16(pos, s, true);
             pos += 2;
           }
-          offset++;
         }
         return new Blob([buffer], { type: "audio/wav" });
       }
 
       recBtn.onclick = async () => {
-        try {
-          if (!audioContext) {
-            audioContext = new (
-              window.AudioContext || window.webkitAudioContext
-            )();
-          }
-          if (audioContext.state === "suspended") await audioContext.resume();
-
-          if (mediaRecorder && mediaRecorder.state === "recording") {
-            mediaRecorder.stop();
-            return;
-          }
-
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-          });
-          const micSource = audioContext.createMediaStreamSource(stream);
-          const dest = audioContext.createMediaStreamDestination();
-          micSource.connect(dest);
-
-          if (currentBlob) {
-            const ab = await currentBlob.arrayBuffer();
-            const audioBuffer = await audioContext.decodeAudioData(ab);
-            const player = audioContext.createBufferSource();
-            player.buffer = audioBuffer;
-            player.connect(dest);
-            player.connect(audioContext.destination);
-            player.start();
-          }
-
-          mediaRecorder = new MediaRecorder(dest.stream);
-          chunks = [];
-          mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-
-          mediaRecorder.onstop = async () => {
-            statusMsg.innerText = "思い出を合成中...";
-            recBtn.classList.remove("recording");
-            recBtn.innerText = "さらに声を重ねる";
-
-            const rawBlob = new Blob(chunks);
-            const ab = await rawBlob.arrayBuffer();
-            audioContext.decodeAudioData(
-              ab,
-              (decoded) => {
-                const wavBlob = bufferToWave(decoded, decoded.length);
-                currentBlob = wavBlob;
-                mainAudio.src = URL.createObjectURL(wavBlob);
-                playBtn.disabled = false;
-                dlBtn.disabled = false;
-                statusMsg.innerText = "重なりました！";
-              },
-              (err) => {
-                statusMsg.innerText = "録音エラー：もう一度お試しください";
-              },
-            );
-          };
-
-          mediaRecorder.start();
-          recBtn.classList.add("recording");
-          recBtn.innerText = "録音を完了する";
-          statusMsg.innerText = "録音中...";
-        } catch (err) {
-          statusMsg.innerText = "マイクを許可してください";
+        if (!audioContext)
+          audioContext = new (
+            window.AudioContext || window.webkitAudioContext
+          )();
+        if (audioContext.state === "suspended") await audioContext.resume();
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+          return;
         }
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+        const dest = audioContext.createMediaStreamDestination();
+        audioContext.createMediaStreamSource(stream).connect(dest);
+        if (currentBlob) {
+          const ab = await audioContext.decodeAudioData(
+            await currentBlob.arrayBuffer(),
+          );
+          const player = audioContext.createBufferSource();
+          player.buffer = ab;
+          player.connect(dest);
+          player.connect(audioContext.destination);
+          player.start();
+        }
+        mediaRecorder = new MediaRecorder(dest.stream);
+        chunks = [];
+        mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+        mediaRecorder.onstop = async () => {
+          statusMsg.innerText = "変換中...";
+          const ab = await new Blob(chunks).arrayBuffer();
+          audioContext.decodeAudioData(ab, (decoded) => {
+            currentBlob = bufferToWave(decoded, decoded.length);
+            mainAudio.src = URL.createObjectURL(currentBlob);
+            playBtn.disabled = dlBtn.disabled = false;
+            statusMsg.innerText = "完了！";
+            recBtn.classList.remove("recording");
+            recBtn.innerText = "録音開始";
+          });
+        };
+        mediaRecorder.start();
+        recBtn.classList.add("recording");
+        recBtn.innerText = "録音を停止";
+        statusMsg.innerText = "録音中...";
       };
 
       playBtn.onclick = () => mainAudio.play();
@@ -280,11 +217,7 @@
         a.download = `hibiki_${Date.now()}.wav`;
         a.click();
       };
-      resetBtn.onclick = () => {
-        if (confirm("全ての録音を消去して最初からやり直しますか？")) {
-          location.reload();
-        }
-      };
+      resetBtn.onclick = () => location.reload();
     </script>
   </body>
 </html>
