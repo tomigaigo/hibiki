@@ -127,95 +127,124 @@
         mainAudio = document.getElementById("mainAudio"),
         statusMsg = document.getElementById("statusMsg");
 
+      // --- 音声データをWAV形式に正しく変換する関数 ---
       function bufferToWave(abuffer, len) {
-        let numOfChan = abuffer.numberOfChannels,
-          length = len * numOfChan * 2 + 44,
-          buffer = new ArrayBuffer(length),
-          view = new DataView(buffer),
+        let numOfChan = abuffer.numberOfChannels;
+        let length = len * numOfChan * 2 + 44;
+        let buffer = new ArrayBuffer(length);
+        let view = new DataView(buffer);
+        let channels = [],
+          i,
+          sample,
+          offset = 0,
           pos = 0;
-        const set = (d, t) => {
-          if (t === 16) view.setUint16(pos, d, true);
-          else view.setUint32(pos, d, true);
-          pos += t === 16 ? 2 : 4;
+
+        const setUint16 = (data) => {
+          view.setUint16(pos, data, true);
+          pos += 2;
         };
-        set(0x46464952, 32);
-        set(length - 8, 32);
-        set(0x45564157, 32);
-        set(0x20746d66, 32);
-        set(16, 32);
-        set(1, 16);
-        set(numOfChan, 16);
-        set(abuffer.sampleRate, 32);
-        set(abuffer.sampleRate * 2 * numOfChan, 32);
-        set(numOfChan * 2, 16);
-        set(16, 16);
-        set(0x61746164, 32);
-        set(length - pos - 4, 32);
-        for (let i = 0; i < numOfChan; i++) {
-          let chan = abuffer.getChannelData(i);
-          for (let j = 0; j < len; j++) {
-            let s = Math.max(-1, Math.min(1, chan[j]));
-            s = s < 0 ? s * 32768 : s * 32767;
-            view.setInt16(pos, s, true);
+        const setUint32 = (data) => {
+          view.setUint32(pos, data, true);
+          pos += 4;
+        };
+
+        // WAVヘッダ書き込み
+        setUint32(0x46464952);
+        setUint32(length - 8);
+        setUint32(0x45564157);
+        setUint32(0x20746d66);
+        setUint32(16);
+        setUint16(1);
+        setUint16(numOfChan);
+        setUint32(abuffer.sampleRate);
+        setUint32(abuffer.sampleRate * 2 * numOfChan);
+        setUint16(numOfChan * 2);
+        setUint16(16);
+        setUint32(0x61746164);
+        setUint32(length - pos - 4);
+
+        for (i = 0; i < numOfChan; i++)
+          channels.push(abuffer.getChannelData(i));
+
+        // 波形データ書き込み（左右のチャンネルを交互に処理）
+        while (pos < length) {
+          for (i = 0; i < numOfChan; i++) {
+            sample = Math.max(-1, Math.min(1, channels[i][offset]));
+            sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
+            view.setInt16(pos, sample, true);
             pos += 2;
           }
+          offset++;
         }
         return new Blob([buffer], { type: "audio/wav" });
       }
 
       recBtn.onclick = async () => {
-        // 修正ポイント：sampleRateを44100に固定して作成
-        if (!audioContext) {
-          const AudioContextClass =
-            window.AudioContext || window.webkitAudioContext;
-          audioContext = new AudioContextClass({ sampleRate: 44100 });
-        }
+        try {
+          if (!audioContext) {
+            const AudioContextClass =
+              window.AudioContext || window.webkitAudioContext;
+            audioContext = new AudioContextClass();
+          }
 
-        if (audioContext.state === "suspended") await audioContext.resume();
-        if (mediaRecorder && mediaRecorder.state === "recording") {
-          mediaRecorder.stop();
-          return;
-        }
+          if (audioContext.state === "suspended") await audioContext.resume();
+          if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+            return;
+          }
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        });
-        const dest = audioContext.createMediaStreamDestination();
-        audioContext.createMediaStreamSource(stream).connect(dest);
-
-        if (currentBlob) {
-          const ab = await audioContext.decodeAudioData(
-            await currentBlob.arrayBuffer(),
-          );
-          const player = audioContext.createBufferSource();
-          player.buffer = ab;
-          player.connect(dest);
-          player.connect(audioContext.destination);
-          player.start();
-        }
-
-        // MIMEタイプを指定して、ブラウザによる勝手な変換を抑制
-        mediaRecorder = new MediaRecorder(dest.stream);
-        chunks = [];
-        mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-        mediaRecorder.onstop = async () => {
-          statusMsg.innerText = "合成中...";
-          const rawBlob = new Blob(chunks);
-          const arrayBuffer = await rawBlob.arrayBuffer();
-
-          audioContext.decodeAudioData(arrayBuffer, (decoded) => {
-            currentBlob = bufferToWave(decoded, decoded.length);
-            mainAudio.src = URL.createObjectURL(currentBlob);
-            playBtn.disabled = dlBtn.disabled = false;
-            statusMsg.innerText = "完了！";
-            recBtn.classList.remove("recording");
-            recBtn.innerText = "録音開始";
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
           });
-        };
-        mediaRecorder.start();
-        recBtn.classList.add("recording");
-        recBtn.innerText = "録音を停止";
-        statusMsg.innerText = "録音中...";
+          const dest = audioContext.createMediaStreamDestination();
+          audioContext.createMediaStreamSource(stream).connect(dest);
+
+          // 前の録音があれば重ねる
+          if (currentBlob) {
+            const ab = await audioContext.decodeAudioData(
+              await currentBlob.arrayBuffer(),
+            );
+            const player = audioContext.createBufferSource();
+            player.buffer = ab;
+            player.connect(dest);
+            player.connect(audioContext.destination);
+            player.start();
+          }
+
+          mediaRecorder = new MediaRecorder(dest.stream);
+          chunks = [];
+          mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+
+          mediaRecorder.onstop = async () => {
+            statusMsg.innerText = "合成中...";
+            // MIMEタイプを明示的に指定して解凍時のバグを防ぐ
+            const rawBlob = new Blob(chunks, { type: mediaRecorder.mimeType });
+            const arrayBuffer = await rawBlob.arrayBuffer();
+
+            audioContext.decodeAudioData(
+              arrayBuffer,
+              (decoded) => {
+                currentBlob = bufferToWave(decoded, decoded.length);
+                mainAudio.src = URL.createObjectURL(currentBlob);
+                playBtn.disabled = dlBtn.disabled = false;
+                statusMsg.innerText = "完了！";
+                recBtn.classList.remove("recording");
+                recBtn.innerText = "録音開始";
+              },
+              (e) => {
+                console.error(e);
+                statusMsg.innerText = "エラーが発生しました";
+              },
+            );
+          };
+
+          mediaRecorder.start();
+          recBtn.classList.add("recording");
+          recBtn.innerText = "録音を停止";
+          statusMsg.innerText = "録音中...";
+        } catch (err) {
+          statusMsg.innerText = "マイクの使用を許可してください";
+        }
       };
 
       playBtn.onclick = () => mainAudio.play();
